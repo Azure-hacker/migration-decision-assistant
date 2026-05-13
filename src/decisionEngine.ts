@@ -78,7 +78,7 @@ export type EnvFlag =
   | 'targetUndecided'
   | 'targetAzureCloud'
 
-export type QuestionType = 'single' | 'number' | 'text'
+export type QuestionType = 'single' | 'number' | 'text' | 'percent'
 
 export type Question = {
   id: string
@@ -96,6 +96,8 @@ export type Question = {
   choices?: Choice[]
   numericImpact?: NumericImpactRule[]
   numericFlags?: NumericFlagRule[]
+  defaultValue?: number
+  showWhen?: (answers: AnswerSet) => boolean
 }
 
 export type NumericImpactRule = {
@@ -148,6 +150,12 @@ export type DecisionDimensionId =
   | 'operations'
   | 'automation'
   | 'risk'
+  | 'snapshots'
+  | 'storageMigration'
+  | 'shieldedVm'
+  | 'trustedLaunch'
+  | 'sdn'
+  | 'controlPlane'
   | 'outcome'
 
 export type DecisionDimensionRow = {
@@ -174,6 +182,45 @@ export type EvaluationResult = {
   answeredCount: number
   totalQuestions: number
   environmentSummary: EnvironmentSummary
+  leanScore: number
+  azureLocalTotal: number
+  hyperVTotal: number
+  azureNativeAffinity: number
+  prosCons: ProsConsBlock[]
+  migrationEffort: MigrationEffort | null
+  containerPlatform?: ContainerPlatformVerdict
+  consideration: ConsiderationVerdict
+}
+
+export type ConsiderationVerdict = {
+  whenAzureLocal: string[]
+  whenHyperV: string[]
+  whenAzureNative: string[]
+  risks: { option: 'azureLocal' | 'hyperV' | 'azureNative'; risk: string }[]
+}
+
+export type ProsConsBlock = {
+  option: 'azureLocal' | 'hyperV' | 'azureNative'
+  title: string
+  pros: string[]
+  cons: string[]
+}
+
+export type ContainerPlatformVerdict = {
+  recommendation: 'aksOnLocal' | 'aro' | 'evaluateBoth'
+  rationale: string[]
+}
+
+export type MigrationEffort = {
+  approach: 'azureMigrate' | 'wacVmode' | 'scvmm' | 'mixed'
+  approachLabel: string
+  totalVmsMigrated: number
+  parallelPerWave: number
+  waves: number
+  estimatedHours: number
+  estimatedWeeks: number
+  complexity: 'low' | 'moderate' | 'elevated' | 'high'
+  notes: string[]
 }
 
 export type EnvironmentSummary = {
@@ -182,9 +229,11 @@ export type EnvironmentSummary = {
   vms?: number
   cores?: number
   virtualDesktops?: number
-  guestOs?: string
+  linuxPercent?: number
+  windowsPercent?: number
   vdiProducts?: string
   targetProduct?: string
+  containerPlatform?: string
 }
 
 const versionLabel = versionData.azureLocal.label
@@ -549,28 +598,59 @@ export const stages: Stage[] = [
         ],
       },
       {
-        id: 'guestOs',
+        id: 'linuxPercent',
         category: 'Workload',
-        prompt: 'Guest operating system mix',
+        prompt: 'Approximate percentage of Linux guest VMs',
+        helper: 'Slide to indicate the share of Linux VMs vs. Windows. The remainder is treated as Windows.',
+        type: 'percent',
+        min: 0,
+        max: 100,
+        step: 5,
+        unit: '% Linux',
+        defaultValue: 20,
+        numericImpact: [
+          { threshold: 60, comparator: 'gte', impact: { alConnectedHCI: 2 } },
+          { threshold: 80, comparator: 'gte', impact: { alConnectedHCI: 3 } },
+          { threshold: 30, comparator: 'lt', impact: { hvFailover: 2, alConnectedHCI: 1 } },
+        ],
+      },
+      {
+        id: 'containerPlatform',
+        category: 'Containers',
+        prompt: 'If Linux is significant, what container platform is preferred?',
+        helper: 'Asked when Linux share is at least 40%. Used to suggest AKS on Azure Local or Azure Red Hat OpenShift.',
         type: 'single',
+        optional: true,
+        showWhen: (answers) => {
+          const value = answers['linuxPercent']
+          return typeof value === 'number' && value >= 40
+        },
         choices: [
           {
-            id: 'windows',
-            label: 'Windows-heavy',
-            description: 'Most VMs run Windows Server.',
-            impact: { hvFailover: 3, alConnectedHCI: 3 },
+            id: 'kubernetes',
+            label: 'Kubernetes (AKS / vanilla K8s)',
+            description: 'Standard Kubernetes platforms align with AKS on Azure Local.',
+            impact: { alConnectedHCI: 3, alMultiRack: 1 },
+            overlays: ['aks'],
           },
           {
-            id: 'linux',
-            label: 'Linux-heavy',
-            description: 'Most VMs run Linux distributions.',
-            impact: { hvFailover: 1, alConnectedHCI: 2 },
+            id: 'openshift',
+            label: 'Red Hat OpenShift',
+            description: 'Existing OpenShift estate suggests Azure Red Hat OpenShift (ARO) as a complement.',
+            impact: { alConnectedHCI: 1 },
+            overlays: ['aks'],
           },
           {
-            id: 'mixed',
-            label: 'Balanced Windows and Linux mix',
-            description: 'Meaningful share of both Windows and Linux workloads.',
-            impact: { hvFailover: 2, alConnectedHCI: 3 },
+            id: 'docker-swarm-other',
+            label: 'Docker Swarm or other',
+            description: 'Other container orchestrators may need rationalization to AKS or OpenShift.',
+            impact: { alConnectedHCI: 1 },
+          },
+          {
+            id: 'none-yet',
+            label: 'No container platform yet',
+            description: 'Greenfield containers — both AKS on Azure Local and ARO are options.',
+            impact: { alConnectedHCI: 1 },
           },
         ],
       },
@@ -1087,18 +1167,215 @@ export const stages: Stage[] = [
           },
         ],
       },
+      {
+        id: 'migrationTool',
+        category: 'Migration and DR',
+        prompt: 'Preferred migration tooling',
+        helper: 'Used to estimate migration effort and parallelism on the result page.',
+        type: 'single',
+        choices: [
+          {
+            id: 'wac-vmode',
+            label: 'Windows Admin Center vMode',
+            description: 'Wave-based VM migration with IP preservation and Gen2 conversion where supported.',
+            impact: { hvFailover: 2, alConnectedHCI: 2 },
+            flags: { wacAdopted: true },
+          },
+          {
+            id: 'azure-migrate',
+            label: 'Azure Migrate',
+            description: 'Microsoft assessment + replication for VMware to Azure / Azure Local at scale.',
+            impact: { alConnectedHCI: 3 },
+            flags: { azureNativeOps: true },
+          },
+          {
+            id: 'scvmm',
+            label: 'SCVMM-led migration to Hyper-V',
+            description: 'Use SCVMM and existing tooling to land workloads on Hyper-V Failover.',
+            impact: { hvFailover: 4 },
+            flags: { scvmmAdopted: true, classicAdmin: true },
+          },
+          {
+            id: 'mixed',
+            label: 'Mixed / partner tooling',
+            description: 'Combination of Microsoft and partner tools across waves.',
+            impact: { alConnectedHCI: 1, hvFailover: 1 },
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'features',
+    title: 'IT operations features',
+    shortTitle: 'IT ops features',
+    description:
+      'How IT ops admins want to operate the platform: snapshots, storage migration, secured / shielded VMs, SDN, and how much you want the Azure control plane to drive everything.',
+    questions: [
+      {
+        id: 'snapshots',
+        category: 'VM lifecycle',
+        prompt: 'How important are VM checkpoints / snapshots for daily ops?',
+        type: 'single',
+        choices: [
+          {
+            id: 'critical',
+            label: 'Critical — used heavily today',
+            description: 'Snapshots / checkpoints are part of standard ops.',
+            impact: { hvFailover: 3, alConnectedHCI: 2 },
+          },
+          {
+            id: 'occasional',
+            label: 'Occasional',
+            impact: { hvFailover: 1, alConnectedHCI: 1 },
+          },
+          {
+            id: 'avoided',
+            label: 'Avoided / replaced by backup',
+            impact: { alConnectedHCI: 1 },
+          },
+        ],
+      },
+      {
+        id: 'storageMigration',
+        category: 'Storage operations',
+        prompt: 'How important is live storage migration / Storage vMotion-equivalent?',
+        type: 'single',
+        choices: [
+          {
+            id: 'critical',
+            label: 'Critical — moved between SAN tiers regularly',
+            impact: { hvSanAttached: 4, alDisaggregatedSAN: 3 },
+          },
+          {
+            id: 'periodic',
+            label: 'Periodic — for refresh / consolidation',
+            impact: { hvSanAttached: 2, alConnectedHCI: 2, alDisaggregatedSAN: 2 },
+          },
+          {
+            id: 'rare',
+            label: 'Rare — handled by replatforming',
+            impact: { alConnectedHCI: 2 },
+          },
+        ],
+      },
+      {
+        id: 'shieldedVms',
+        category: 'Security',
+        prompt: 'Are Shielded VMs in scope for sensitive workloads?',
+        helper: 'Shielded VMs use vTPM, BitLocker, and host attestation in Hyper-V on Windows Server.',
+        type: 'single',
+        choices: [
+          {
+            id: 'yes',
+            label: 'Yes — required for some workloads',
+            impact: { hvFailover: 4 },
+          },
+          {
+            id: 'evaluating',
+            label: 'Evaluating',
+            impact: { hvFailover: 2 },
+          },
+          {
+            id: 'no',
+            label: 'No requirement',
+          },
+        ],
+      },
+      {
+        id: 'trustedLaunch',
+        category: 'Security',
+        prompt: 'Is Trusted Launch / vTPM-based VM security needed?',
+        helper: 'Trusted Launch is broadly available on Azure-aligned platforms with vTPM and Secure Boot.',
+        type: 'single',
+        choices: [
+          {
+            id: 'yes',
+            label: 'Yes — required',
+            impact: { alConnectedHCI: 3, hvFailover: 2 },
+          },
+          {
+            id: 'evaluating',
+            label: 'Evaluating',
+            impact: { alConnectedHCI: 1 },
+          },
+          {
+            id: 'no',
+            label: 'No requirement',
+          },
+        ],
+      },
+      {
+        id: 'sdn',
+        category: 'Networking',
+        prompt: 'Is software-defined networking (SDN) used or planned?',
+        helper: 'SDN includes virtual networks, micro-segmentation, software load balancers, and gateways.',
+        type: 'single',
+        choices: [
+          {
+            id: 'yes',
+            label: 'Yes — central to the design',
+            impact: { alConnectedHCI: 3, alMultiRack: 2 },
+          },
+          {
+            id: 'partial',
+            label: 'Partial — for selected segments',
+            impact: { alConnectedHCI: 2 },
+          },
+          {
+            id: 'no',
+            label: 'No SDN today or planned',
+            impact: { hvFailover: 2 },
+          },
+        ],
+      },
+      {
+        id: 'controlPlane',
+        category: 'Operating model',
+        prompt: 'How much should Azure act as the platform control plane?',
+        helper: 'Azure-native control plane means Arc, Azure Policy, Update Manager, and Azure Monitor are the source of truth.',
+        type: 'single',
+        choices: [
+          {
+            id: 'azure-first',
+            label: 'Azure-first (Arc, Policy, Monitor as default)',
+            impact: { alConnectedHCI: 5, alMultiRack: 2 },
+            flags: { azureNativeOps: true },
+          },
+          {
+            id: 'balanced',
+            label: 'Balanced — Azure for some, local for the rest',
+            impact: { alConnectedHCI: 2, hvFailover: 2 },
+          },
+          {
+            id: 'local-first',
+            label: 'Local-first (WAC, SCVMM, PowerShell)',
+            impact: { hvFailover: 4 },
+            flags: { classicAdmin: true },
+          },
+        ],
+      },
     ],
   },
 ]
 
 const allQuestions = stages.flatMap((stage) => stage.questions)
 
+const isVisible = (question: Question, answers: AnswerSet) =>
+  question.showWhen ? question.showWhen(answers) : true
+
+export const visibleQuestions = (state: WizardState) =>
+  allQuestions.filter((q) => isVisible(q, state.answers))
+
+export const visibleQuestionsForStage = (stage: Stage, state: WizardState) =>
+  stage.questions.filter((q) => isVisible(q, state.answers))
+
 const requiredQuestionIds = allQuestions
   .filter((question) => !question.optional && question.id !== 'vdiProducts' && question.id !== 'virtualDesktops')
   .map((question) => question.id)
 
 const isAnswered = (question: Question, answer: AnswerValue) => {
-  if (question.type === 'number') {
+  if (question.type === 'number' || question.type === 'percent') {
     return typeof answer === 'number' && Number.isFinite(answer)
   }
   if (question.type === 'text') {
@@ -1106,6 +1383,20 @@ const isAnswered = (question: Question, answer: AnswerValue) => {
   }
   return typeof answer === 'string' && answer.length > 0
 }
+
+export const isQuestionRequired = (question: Question) =>
+  !question.optional && question.id !== 'vdiProducts' && question.id !== 'virtualDesktops'
+
+export const isQuestionAnswered = (question: Question, answer: AnswerValue) =>
+  isAnswered(question, answer)
+
+export const visibleRequiredQuestionsForStage = (stage: Stage, state: WizardState) =>
+  visibleQuestionsForStage(stage, state).filter(isQuestionRequired)
+
+export const stageMissingRequired = (stage: Stage, state: WizardState) =>
+  visibleRequiredQuestionsForStage(stage, state).filter(
+    (q) => !isQuestionAnswered(q, state.answers[q.id]),
+  )
 
 const compareNumber = (value: number, rule: { threshold: number; comparator: NumericImpactRule['comparator'] }) => {
   switch (rule.comparator) {
@@ -1185,6 +1476,54 @@ const decisionMatrixTemplate: DecisionDimensionRow[] = [
     leans: 'either',
   },
   {
+    id: 'snapshots',
+    dimension: 'Snapshots / checkpoints',
+    question: 'How are VM snapshots and checkpoints used day to day?',
+    azureLocal: 'Hyper-V production checkpoints supported, complemented by Azure Backup integration.',
+    hyperV: 'Native Hyper-V checkpoints with full Failover Cluster Manager and SCVMM support.',
+    leans: 'either',
+  },
+  {
+    id: 'storageMigration',
+    dimension: 'Storage migration',
+    question: 'How are VMs moved between storage tiers or arrays?',
+    azureLocal: 'Live storage migration within HCI volumes; disaggregated SAN inherits SAN-vendor moves.',
+    hyperV: 'Storage migration delivered by SAN vendor and Hyper-V Storage Live Migration.',
+    leans: 'either',
+  },
+  {
+    id: 'shieldedVm',
+    dimension: 'Shielded VMs',
+    question: 'Do you need Shielded VMs with vTPM, BitLocker, and Host Guardian?',
+    azureLocal: 'Use Trusted Launch and Azure Confidential Computing patterns where supported.',
+    hyperV: 'Native Shielded VMs with Host Guardian Service in Windows Server / Hyper-V.',
+    leans: 'either',
+  },
+  {
+    id: 'trustedLaunch',
+    dimension: 'Trusted Launch / vTPM',
+    question: 'Are Secure Boot + vTPM-based VMs required?',
+    azureLocal: 'Trusted Launch / Confidential VMs aligned to Azure capabilities.',
+    hyperV: 'vTPM and Secure Boot supported via Hyper-V Generation 2 VMs.',
+    leans: 'either',
+  },
+  {
+    id: 'sdn',
+    dimension: 'Software-defined networking',
+    question: 'How important is SDN, micro-segmentation, and software load balancing?',
+    azureLocal: 'Network ATC, SDN, and Azure-aligned virtual networks built into the platform.',
+    hyperV: 'Windows Server SDN available but typically less central to ops than Azure Local.',
+    leans: 'either',
+  },
+  {
+    id: 'controlPlane',
+    dimension: 'Control plane',
+    question: 'Where is the source of truth for policy, monitoring, and updates?',
+    azureLocal: 'Azure (Arc, Policy, Monitor, Update Manager) as the default control plane.',
+    hyperV: 'Local tooling (WAC, SCVMM, PowerShell) with optional Azure services.',
+    leans: 'either',
+  },
+  {
     id: 'outcome',
     dimension: 'Outcome fit',
     question: 'Which option best preserves existing investment while meeting requirements?',
@@ -1196,19 +1535,71 @@ const decisionMatrixTemplate: DecisionDimensionRow[] = [
 
 const computeMatrixLeans = (
   totals: Record<PatternId, number>,
+  state: WizardState,
 ): DecisionDimensionRow[] => {
   const azureLocalTotal =
     totals.alConnectedHCI + totals.alRAC + totals.alMultiRack + totals.alDisaggregatedSAN + totals.aldo
   const hyperVTotal = totals.hvFailover + totals.hvCampus + totals.hvSanAttached
-  const leans: DecisionDimensionRow['leans'] =
+  const outcomeLeans: DecisionDimensionRow['leans'] =
     azureLocalTotal === hyperVTotal
       ? 'either'
       : azureLocalTotal > hyperVTotal
         ? 'azureLocal'
         : 'hyperV'
-  return decisionMatrixTemplate.map((row) =>
-    row.id === 'outcome' ? { ...row, leans } : { ...row, leans: 'either' },
-  )
+
+  const a = state.answers
+  const featureLeans: Record<string, DecisionDimensionRow['leans']> = {
+    snapshots:
+      a['snapshots'] === 'critical'
+        ? 'hyperV'
+        : a['snapshots'] === 'avoided'
+          ? 'azureLocal'
+          : 'either',
+    storageMigration:
+      a['storageMigration'] === 'critical'
+        ? 'hyperV'
+        : a['storageMigration'] === 'rare'
+          ? 'azureLocal'
+          : 'either',
+    shieldedVm: a['shieldedVms'] === 'yes' ? 'hyperV' : 'either',
+    trustedLaunch: a['trustedLaunch'] === 'yes' ? 'azureLocal' : 'either',
+    sdn:
+      a['sdn'] === 'yes'
+        ? 'azureLocal'
+        : a['sdn'] === 'no'
+          ? 'hyperV'
+          : 'either',
+    controlPlane:
+      a['controlPlane'] === 'azure-first'
+        ? 'azureLocal'
+        : a['controlPlane'] === 'local-first'
+          ? 'hyperV'
+          : 'either',
+    hardware:
+      a['hardwareRefresh'] === 'no'
+        ? 'hyperV'
+        : a['hardwareRefresh'] === 'yes-12' || a['hardwareRefresh'] === 'yes-24'
+          ? 'azureLocal'
+          : 'either',
+    hybrid:
+      a['controlPlane'] === 'azure-first' || a['arc'] === 'now'
+        ? 'azureLocal'
+        : a['arc'] === 'no'
+          ? 'hyperV'
+          : 'either',
+    operations:
+      a['scvmm'] === 'yes' ? 'hyperV' : a['arc'] === 'now' ? 'azureLocal' : 'either',
+    automation:
+      a['controlPlane'] === 'azure-first' ? 'azureLocal' : a['scvmm'] === 'yes' ? 'hyperV' : 'either',
+    risk:
+      a['hardwareRefresh'] === 'no' && a['scvmm'] === 'yes' ? 'hyperV' : outcomeLeans,
+    commercial: outcomeLeans,
+  }
+
+  return decisionMatrixTemplate.map((row) => {
+    if (row.id === 'outcome') return { ...row, leans: outcomeLeans }
+    return { ...row, leans: featureLeans[row.id] ?? 'either' }
+  })
 }
 
 const buildEnvironmentSummary = (state: WizardState): EnvironmentSummary => {
@@ -1217,19 +1608,20 @@ const buildEnvironmentSummary = (state: WizardState): EnvironmentSummary => {
   const hosts = state.answers['hosts']
   const vms = state.answers['vms']
   const cores = state.answers['cores']
-  const guestOs = state.answers['guestOs']
+  const linuxPercent = state.answers['linuxPercent']
   const virtualDesktops = state.answers['virtualDesktops']
   const vdiProducts = state.answers['vdiProducts']
   const targetProduct = state.answers['targetProduct']
+  const containerPlatform = state.answers['containerPlatform']
 
   if (typeof sites === 'number') summary.sites = sites
   if (typeof hosts === 'number') summary.hosts = hosts
   if (typeof vms === 'number') summary.vms = vms
   if (typeof cores === 'number') summary.cores = cores
   if (typeof virtualDesktops === 'number') summary.virtualDesktops = virtualDesktops
-  if (typeof guestOs === 'string' && guestOs) {
-    const choice = allQuestions.find((q) => q.id === 'guestOs')?.choices?.find((c) => c.id === guestOs)
-    summary.guestOs = choice?.label
+  if (typeof linuxPercent === 'number') {
+    summary.linuxPercent = linuxPercent
+    summary.windowsPercent = Math.max(0, 100 - linuxPercent)
   }
   if (typeof vdiProducts === 'string' && vdiProducts.trim().length > 0) {
     summary.vdiProducts = vdiProducts.trim()
@@ -1237,6 +1629,10 @@ const buildEnvironmentSummary = (state: WizardState): EnvironmentSummary => {
   if (typeof targetProduct === 'string' && targetProduct) {
     const choice = allQuestions.find((q) => q.id === 'targetProduct')?.choices?.find((c) => c.id === targetProduct)
     summary.targetProduct = choice?.label
+  }
+  if (typeof containerPlatform === 'string' && containerPlatform) {
+    const choice = allQuestions.find((q) => q.id === 'containerPlatform')?.choices?.find((c) => c.id === containerPlatform)
+    summary.containerPlatform = choice?.label
   }
   return summary
 }
@@ -1258,6 +1654,7 @@ const evaluateScores = (state: WizardState) => {
 
   for (const stage of stages) {
     for (const question of stage.questions) {
+      if (!isVisible(question, state.answers)) continue
       const answer = state.answers[question.id]
       if (!isAnswered(question, answer)) continue
 
@@ -1280,7 +1677,7 @@ const evaluateScores = (state: WizardState) => {
         choice.overlays?.forEach((id) => overlayIds.add(id))
       }
 
-      if (question.type === 'number' && typeof answer === 'number') {
+      if ((question.type === 'number' || question.type === 'percent') && typeof answer === 'number') {
         question.numericImpact?.forEach((rule) => {
           if (compareNumber(answer, rule)) {
             for (const [patternId, value] of Object.entries(rule.impact) as Array<[PatternId, number]>) {
@@ -1310,19 +1707,239 @@ const evaluateScores = (state: WizardState) => {
 
 const dedupe = (items: string[]) => Array.from(new Set(items))
 
+const computeMigrationEffort = (
+  state: WizardState,
+  recommendations: Recommendation[],
+): MigrationEffort | null => {
+  const vms = state.answers['vms']
+  if (typeof vms !== 'number' || vms <= 0) return null
+  const tool = state.answers['migrationTool']
+  const hosts = typeof state.answers['hosts'] === 'number' ? (state.answers['hosts'] as number) : 0
+  const primaryFamily = recommendations[0]?.pattern.family
+
+  let approach: MigrationEffort['approach'] = 'mixed'
+  let approachLabel = 'Mixed Microsoft and partner tooling'
+  let parallelPerHost = 6
+  let hoursPerVm = 2
+  const notes: string[] = []
+
+  if (tool === 'wac-vmode') {
+    approach = 'wacVmode'
+    approachLabel = 'Windows Admin Center vMode'
+    parallelPerHost = 8
+    hoursPerVm = 1.5
+    notes.push('WAC vMode supports wave-based migrations with IP preservation and Gen2 conversion where supported by the guest OS.')
+    notes.push('Validate Gen1 vs Gen2 readiness — UEFI-capable Linux and Windows guests can be promoted to Gen2.')
+  } else if (tool === 'azure-migrate') {
+    approach = 'azureMigrate'
+    approachLabel = 'Azure Migrate (assessment + replication)'
+    parallelPerHost = 10
+    hoursPerVm = 2.5
+    notes.push('Azure Migrate scales replication in batches; size the appliance and bandwidth before each wave.')
+    notes.push('Static IP preservation typically requires planned IP remap or routing changes — design for it.')
+  } else if (tool === 'scvmm') {
+    approach = 'scvmm'
+    approachLabel = 'SCVMM-led migration to Hyper-V'
+    parallelPerHost = 5
+    hoursPerVm = 2
+    notes.push('SCVMM converts and lands VMs on Hyper-V Failover targets using existing operations skills.')
+    notes.push('Plan SCVMM library, runbooks, and licensing alongside Hyper-V cluster targets.')
+  } else if (tool === 'mixed' || !tool) {
+    approach = 'mixed'
+    approachLabel = 'Mixed Microsoft and partner tooling'
+    parallelPerHost = 6
+    hoursPerVm = 2.25
+    notes.push('Pick a primary tool per wave; mixing tools needs explicit handoff and validation steps.')
+  }
+
+  if (primaryFamily === 'azureLocal') {
+    notes.push('Bias waves toward Azure Local once Arc onboarding, Update Manager, and Policy are in place.')
+    hoursPerVm += 0.25
+  } else if (primaryFamily === 'hyperV') {
+    notes.push('Bias waves toward Hyper-V targets first to retire legacy hosts and reuse storage.')
+  }
+
+  const parallelPerWave = Math.max(parallelPerHost, hosts > 0 ? Math.min(parallelPerHost * Math.max(1, Math.floor(hosts / 4)), 60) : parallelPerHost)
+  const waves = Math.max(1, Math.ceil(vms / parallelPerWave))
+  const estimatedHours = Math.round(vms * hoursPerVm)
+  const estimatedWeeks = Math.max(1, Math.ceil(estimatedHours / 60))
+
+  let complexity: MigrationEffort['complexity']
+  if (vms < 100) complexity = 'low'
+  else if (vms < 500) complexity = 'moderate'
+  else if (vms < 2000) complexity = 'elevated'
+  else complexity = 'high'
+
+  return {
+    approach,
+    approachLabel,
+    totalVmsMigrated: vms,
+    parallelPerWave,
+    waves,
+    estimatedHours,
+    estimatedWeeks,
+    complexity,
+    notes,
+  }
+}
+
+const computeContainerVerdict = (state: WizardState): ContainerPlatformVerdict | undefined => {
+  const linuxPercent = state.answers['linuxPercent']
+  if (typeof linuxPercent !== 'number' || linuxPercent < 40) return undefined
+  const platform = state.answers['containerPlatform']
+  if (platform === 'openshift') {
+    return {
+      recommendation: 'aro',
+      rationale: [
+        'Existing OpenShift footprint maps cleanly to Azure Red Hat OpenShift (ARO) for jointly-engineered support.',
+        'AKS on Azure Local can host stateless services if platform consolidation is desired.',
+      ],
+    }
+  }
+  if (platform === 'kubernetes' || platform === 'docker-swarm-other' || platform === 'none-yet') {
+    return {
+      recommendation: 'aksOnLocal',
+      rationale: [
+        'Container preference and Linux share favor AKS on Azure Local for local Kubernetes workloads.',
+        'Use ARO when Red Hat ecosystem dependencies (Operators, OperatorHub, OCP networking) drive the choice.',
+      ],
+    }
+  }
+  return {
+    recommendation: 'evaluateBoth',
+    rationale: [
+      'Linux share is meaningful but no container preference was captured — evaluate AKS on Azure Local and ARO together.',
+    ],
+  }
+}
+
+const buildProsCons = (state: WizardState): ProsConsBlock[] => {
+  const a = state.answers
+  return [
+    {
+      option: 'azureLocal',
+      title: `${versionData.azureLocal.label} (hybrid, Azure-aligned)`,
+      pros: [
+        'Azure Arc, Policy, Monitor, and Update Manager as the default control plane.',
+        'Validated hardware catalog with consistent updates and lifecycle.',
+        'Strong fit for AVD on Azure Local, AKS on Azure Local, Foundry Local AI inference, and SDN-centric designs.',
+        a['hardwareRefresh'] === 'yes-12' || a['hardwareRefresh'] === 'yes-24'
+          ? 'Aligns naturally with the planned hardware refresh window.'
+          : 'Pairs well with new validated hardware purchases when the refresh window arrives.',
+      ],
+      cons: [
+        'Requires validated Azure Local hardware — not all existing hosts will qualify.',
+        'Requires Arc registration and Azure connectivity for the Connected pattern (use ALDO for disconnected sites).',
+        a['scvmm'] === 'yes'
+          ? 'SCVMM is not the primary management tool — operations need to shift to Azure-native tooling.'
+          : 'Operations team must adopt Azure-native day-2 patterns.',
+      ],
+    },
+    {
+      option: 'hyperV',
+      title: `${versionData.windowsServer.label} with Hyper-V`,
+      pros: [
+        'Reuses existing Windows Server skills, hardware, and storage strategy.',
+        'Native Shielded VMs, Failover Clustering, and SCVMM for VM-led estates.',
+        'Lowest-friction first wave for legacy or rarely-changed VM workloads.',
+        a['hardwareRefresh'] === 'no'
+          ? 'No hardware refresh required — landed on existing certified servers.'
+          : 'Works with existing hosts when validated Azure Local SKUs are not in budget.',
+      ],
+      cons: [
+        'No Azure-native control plane out of the box — Arc and policy are opt-in.',
+        'Cross-site availability needs explicit campus / stretched design.',
+        'Modernization workloads (AVD, AKS, AI) sit better on Azure Local.',
+      ],
+    },
+    {
+      option: 'azureNative',
+      title: 'Azure-native (cloud-first)',
+      pros: [
+        'No on-premises hardware lifecycle for the affected workloads.',
+        'Native managed services for Kubernetes, AI, identity, and VDI.',
+        'Pay-as-you-go consumption model with global scale and DR options.',
+      ],
+      cons: [
+        'Requires Azure connectivity and may not satisfy data residency or sovereignty constraints.',
+        'Licensing, egress, and consumption modeling need close review using the Azure pricing calculator.',
+        'Latency-sensitive or local-data workloads may still need Azure Local or Hyper-V on-premises.',
+      ],
+    },
+  ]
+}
+
+const buildConsiderations = (
+  state: WizardState,
+  flags: Set<EnvFlag>,
+): ConsiderationVerdict => {
+  const a = state.answers
+  const verdict: ConsiderationVerdict = {
+    whenAzureLocal: [
+      'Azure-first operating model is the explicit goal.',
+      'Cross-site availability or RAC stretched cluster is needed.',
+      'Modernization workloads (AVD, AKS, Foundry Local, GitHub Local, M365 Local) drive the program.',
+      'A hardware refresh window aligns with adopting validated Azure Local SKUs.',
+    ],
+    whenHyperV: [
+      'Existing Windows Server skills, SCVMM, and FC / iSCSI / SMB SAN must be preserved.',
+      'Shielded VMs are required and central to the security model.',
+      'Snapshots and storage migration are heavy in daily operations.',
+      'No hardware refresh is in scope and validated Azure Local SKUs cannot be funded yet.',
+    ],
+    whenAzureNative: [
+      'Workloads are greenfield or can run in Azure regions without local-data constraints.',
+      'There is no requirement for sovereignty, air-gap, or strict on-premises placement.',
+      'Consumption pricing is preferable to capex for the workloads in scope.',
+    ],
+    risks: [
+      { option: 'azureLocal', risk: 'Validated hardware availability and Arc onboarding readiness must be confirmed before commit.' },
+      { option: 'hyperV', risk: 'Misses the Azure-native control plane benefits and will accumulate operational drift over time.' },
+      { option: 'azureNative', risk: 'Network egress, identity integration, and data gravity must be modeled — not all workloads pencil out.' },
+    ],
+  }
+  if (flags.has('disconnected') || flags.has('sovereign')) {
+    verdict.whenAzureNative = [
+      'Not applicable when sovereign or disconnected operations are required.',
+    ]
+  }
+  if (a['scvmm'] === 'yes') {
+    verdict.whenHyperV.push('SCVMM is the active management tool — preserve it during the first migration waves.')
+  }
+  if (a['shieldedVms'] === 'yes') {
+    verdict.whenHyperV.push('Shielded VMs are required — Hyper-V Host Guardian Service is the canonical pattern.')
+  }
+  return verdict
+}
+
+const computeAzureNativeAffinity = (state: WizardState, flags: Set<EnvFlag>): number => {
+  if (flags.has('disconnected') || flags.has('sovereign')) return 0
+  let score = 0
+  if (state.answers['targetProduct'] === 'avs-azurevm') score += 5
+  if (state.answers['controlPlane'] === 'azure-first') score += 3
+  if (state.answers['arc'] === 'now') score += 2
+  if (state.answers['avdScope'] === 'yes') score += 1
+  if (state.answers['aksScope'] === 'yes') score += 1
+  if (state.answers['hardwareRefresh'] === 'yes-12') score += 2
+  return score
+}
+
 export const evaluate = (state: WizardState): EvaluationResult => {
   const totalQuestions = requiredQuestionIds.length
-  const answeredCount = requiredQuestionIds.filter((id) =>
+  const visibleRequired = requiredQuestionIds.filter((id) =>
+    isVisible(allQuestions.find((q) => q.id === id)!, state.answers),
+  )
+  const answeredCount = visibleRequired.filter((id) =>
     isAnswered(allQuestions.find((q) => q.id === id)!, state.answers[id]),
   ).length
 
   const { totals, flags, overlayIds, rationales } = evaluateScores(state)
 
-  const ready = answeredCount >= Math.ceil(totalQuestions * 0.6)
+  const ready = answeredCount >= Math.ceil(visibleRequired.length * 0.6)
 
   const readinessGap = ready
     ? []
-    : requiredQuestionIds
+    : visibleRequired
         .filter((id) => !isAnswered(allQuestions.find((q) => q.id === id)!, state.answers[id]))
         .slice(0, 6)
         .map((id) => allQuestions.find((q) => q.id === id)!.prompt)
@@ -1342,6 +1959,12 @@ export const evaluate = (state: WizardState): EvaluationResult => {
 
   const topAzureLocal = azureLocalScores[0]
   const topHyperV = hyperVScores[0]
+
+  const azureLocalTotal =
+    totals.alConnectedHCI + totals.alRAC + totals.alMultiRack + totals.alDisaggregatedSAN + totals.aldo
+  const hyperVTotal = totals.hvFailover + totals.hvCampus + totals.hvSanAttached
+  const sumOptions = azureLocalTotal + hyperVTotal
+  const leanScore = sumOptions === 0 ? 0 : Math.round(((azureLocalTotal - hyperVTotal) / sumOptions) * 100)
 
   const recommendations: Recommendation[] = []
   let hybridRecommended = false
@@ -1415,8 +2038,7 @@ export const evaluate = (state: WizardState): EvaluationResult => {
 
   const overlayList = overlays.filter((overlay) => overlayIds.has(overlay.id))
 
-  const considerAzureNative =
-    ready && !flags.has('disconnected') && !flags.has('sovereign')
+  const considerAzureNative = ready && !flags.has('disconnected') && !flags.has('sovereign')
   const azureNativeRationale: string[] = []
   if (considerAzureNative) {
     azureNativeRationale.push(
@@ -1437,7 +2059,12 @@ export const evaluate = (state: WizardState): EvaluationResult => {
     )
   }
 
-  const decisionMatrix = computeMatrixLeans(totals)
+  const decisionMatrix = computeMatrixLeans(totals, state)
+  const migrationEffort = ready ? computeMigrationEffort(state, recommendations) : null
+  const containerPlatform = computeContainerVerdict(state)
+  const prosCons = buildProsCons(state)
+  const consideration = buildConsiderations(state, flags)
+  const azureNativeAffinity = computeAzureNativeAffinity(state, flags)
 
   return {
     ready,
@@ -1454,15 +2081,30 @@ export const evaluate = (state: WizardState): EvaluationResult => {
     answeredCount,
     totalQuestions,
     environmentSummary: buildEnvironmentSummary(state),
+    leanScore,
+    azureLocalTotal,
+    hyperVTotal,
+    azureNativeAffinity,
+    prosCons,
+    migrationEffort,
+    containerPlatform,
+    consideration,
   }
 }
 
-export const isStageComplete = (stage: Stage, state: WizardState) =>
-  stage.questions
-    .filter((question) => !question.optional)
+export const isStageComplete = (stage: Stage, state: WizardState) => {
+  const visible = visibleQuestionsForStage(stage, state)
+  return visible
+    .filter((question) => isQuestionRequired(question))
     .every((question) => isAnswered(question, state.answers[question.id]))
+}
 
 export const stageAnsweredCount = (stage: Stage, state: WizardState) =>
-  stage.questions.filter((question) => isAnswered(question, state.answers[question.id])).length
+  visibleQuestionsForStage(stage, state).filter((question) =>
+    isAnswered(question, state.answers[question.id]),
+  ).length
+
+export const stageVisibleCount = (stage: Stage, state: WizardState) =>
+  visibleQuestionsForStage(stage, state).length
 
 export const totalRequiredQuestions = requiredQuestionIds.length

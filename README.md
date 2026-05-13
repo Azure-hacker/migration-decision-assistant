@@ -1,21 +1,42 @@
-# Migration Decision Assistant
+<p align="center">
+  <img src="public/favicon.svg" alt="Migration Decision Assistant" width="120" />
+</p>
 
-> Open source reference guide for scoping conversations between **Azure Local** and **Windows Server / Hyper-V** deployment patterns.
+<h1 align="center">Migration Decision Assistant</h1>
 
-🌐 **Live site:** https://azure-hacker.github.io/migration-decision-assistant/
+<p align="center">
+  <em>Open source decision assistant for <strong>Azure Local</strong> vs <strong>Windows Server / Hyper-V</strong> deployments.</em>
+</p>
+
+<p align="center">
+  🌐 <strong>Live:</strong> <a href="https://azure-hacker.github.io/migration-decision-assistant/">azure-hacker.github.io/migration-decision-assistant</a>
+</p>
 
 ---
 
 ## What it is
 
-The Migration Decision Assistant is a deterministic, rule-based wizard. It asks structured questions about a customer environment (sites, hosts, VMs, cores, storage strategy, sovereignty, AVD, AKS, Foundry Local, and other strategic workloads) and returns:
+The Migration Decision Assistant is a deterministic, rule-based wizard. It asks structured questions about a customer environment (sites, hosts, VMs, cores, storage strategy, Linux/Windows mix, sovereignty, AVD, AKS, Foundry Local, and other strategic workloads) and returns:
 
 - One or more **recommended deployment patterns** with rationale, "best for", and "watch-outs"
-- A **side-by-side decision matrix** for Azure Local vs. Hyper-V
+- A **side-by-side decision matrix** with a visual lean indicator between Azure Local and Hyper-V
+- **Pros & cons** plus **when-to-choose** cards for Azure Local, Hyper-V, and Azure-native
 - **Workload overlays** (AVD, AKS, Foundry Local, GitHub Enterprise local, M365 Local, sovereign / disconnected, migration / DR, cross-site availability)
 - A **hybrid recommendation** when both platforms score meaningfully and the workloads naturally split
+- A **migration effort estimator** (parallel migrations, waves, hours, weeks) tuned for the chosen migration tooling (Azure Migrate, SCVMM, WAC vMode, mixed)
+- A **container platform verdict** (AKS-on-Local vs ARO vs strategy review) when Linux ≥ 40 %
 - A pointer to **Azure-native (cloud-first)** alternatives and the Azure pricing calculator
-- Links to **Microsoft Unified** offerings for delivery, activation, and Day 2 operations
+- Links to **Microsoft Unified** delivery, activation, and Day-2 operations offerings
+
+## Companion features
+
+- 📑 **PPTX export** — one-click branded deck with executive summary, environment, recommendations, decision matrix, IT ops features, migration effort, pros/cons, considerations, implementation phases, and Microsoft Unified CTA
+- 🔗 **Shareable link** — encodes your answers in a URL (no server, no storage)
+- 🧭 **Mandatory question enforcement** — Continue is blocked until required questions are answered
+- 🌗 **Light / dark themes** — persisted across sessions
+- 📱 **Mobile responsive** — slide-in nav drawer on small screens
+- 🧪 **RFI / RFP companion (Preview)** — searchable knowledge base for sales-led discovery responses
+- 🔄 **Auto-updates every 2 weeks** — versions pinned to public Microsoft documentation as the single source of truth
 
 Patterns surfaced today:
 
@@ -31,9 +52,14 @@ Patterns surfaced today:
 ## Who it is for
 
 - **Microsoft POD leads** scoping VMware-exit engagements
+- **Sales / pre-sales** answering RFI / RFP questions
 - **Customers and partners** who want a structured, documented frame for the Azure Local vs. Hyper-V decision
 
 This tool is **not a replacement** for sizing, licensing review, validated hardware confirmation, identity / security / networking design, supportability review, or formal architecture review.
+
+## Privacy
+
+No data you enter is stored on a server. All evaluation runs in your browser. You can [self-host or run it locally](#develop-locally) if you'd prefer to keep everything on your machine.
 
 ## Open source disclaimer
 

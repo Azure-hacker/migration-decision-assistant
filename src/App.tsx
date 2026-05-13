@@ -1,13 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { Logo } from './components/Logo'
+import { RfpSection } from './components/RfpSection'
 import { versionData } from './data/versions'
 import {
   evaluate,
+  isQuestionAnswered,
+  isQuestionRequired,
   isStageComplete,
-  stageAnsweredCount,
+  stageMissingRequired,
   stages,
-  totalRequiredQuestions,
+  stageVisibleCount,
+  stageAnsweredCount,
+  visibleQuestionsForStage,
   type AnswerSet,
   type AnswerValue,
   type EvaluationResult,
@@ -16,8 +21,11 @@ import {
   type Stage,
   type WizardState,
 } from './decisionEngine'
+import { buildShareUrl, clearSharedAnswers, readSharedAnswers } from './utils/share'
+import { generatePptx } from './utils/pptx'
 
 const RESULT_STEP_ID = 'result'
+const RFP_STEP_ID = 'rfp'
 const FEEDBACK_URL =
   'https://github.com/Azure-hacker/migration-decision-assistant/issues/new?title=Feedback%3A%20Migration%20Decision%20Assistant&labels=feedback'
 const REPO_URL = 'https://github.com/Azure-hacker/migration-decision-assistant'
@@ -77,6 +85,19 @@ const buildMarkdown = (result: EvaluationResult) => {
     lines.push('')
   }
 
+  if (result.migrationEffort) {
+    const me = result.migrationEffort
+    lines.push('## Migration effort estimate')
+    lines.push(`- Approach: ${me.approachLabel}`)
+    lines.push(`- VMs in scope: ${me.totalVmsMigrated}`)
+    lines.push(`- Parallel per wave: ${me.parallelPerWave}`)
+    lines.push(`- Waves: ${me.waves}`)
+    lines.push(`- Estimated effort: ${me.estimatedHours}h (~${me.estimatedWeeks} weeks)`)
+    lines.push(`- Complexity: ${me.complexity}`)
+    me.notes.forEach((n) => lines.push(`- Note: ${n}`))
+    lines.push('')
+  }
+
   if (result.overlays.length > 0) {
     lines.push('## Workload overlays')
     for (const overlay of result.overlays) {
@@ -92,6 +113,7 @@ const buildMarkdown = (result: EvaluationResult) => {
     lines.push(`- ${row.dimension} — ${row.question}`)
     lines.push(`  - Azure Local: ${row.azureLocal}`)
     lines.push(`  - Hyper-V: ${row.hyperV}`)
+    lines.push(`  - Lean: ${row.leans}`)
   }
   lines.push('')
 
@@ -103,10 +125,50 @@ const buildMarkdown = (result: EvaluationResult) => {
   }
 
   lines.push(
-    'Disclaimer: open source reference guidance only. Not official Microsoft support. Customers still need sizing, licensing, validated hardware, identity, security, networking, supportability, and a formal architecture review before any deployment.',
+    'Disclaimer: open source reference guidance only. Not official Microsoft support. Customers still need sizing, licensing, validated hardware, and architecture review.',
   )
 
   return lines.join('\n')
+}
+
+function PercentInput({
+  question,
+  value,
+  onChange,
+}: {
+  question: Question
+  value: AnswerValue
+  onChange: (questionId: string, value: AnswerValue) => void
+}) {
+  const current =
+    typeof value === 'number' && Number.isFinite(value)
+      ? value
+      : question.defaultValue ?? question.min ?? 0
+  return (
+    <div className="percent-input">
+      <div className="percent-bar">
+        <span className="percent-windows" style={{ width: `${100 - current}%` }}>
+          {100 - current}% Windows
+        </span>
+        <span className="percent-linux" style={{ width: `${current}%` }}>
+          {current}% Linux
+        </span>
+      </div>
+      <input
+        max={question.max ?? 100}
+        min={question.min ?? 0}
+        onChange={(event) => onChange(question.id, Number(event.target.value))}
+        step={question.step ?? 5}
+        type="range"
+        value={current}
+      />
+      <div className="percent-scale">
+        <span>0% Linux</span>
+        <span>50/50</span>
+        <span>100% Linux</span>
+      </div>
+    </div>
+  )
 }
 
 function NumberInput({
@@ -177,17 +239,31 @@ function QuestionCard({
   question,
   value,
   onChange,
+  highlightMissing,
 }: {
   question: Question
   value: AnswerValue
   onChange: (questionId: string, value: AnswerValue) => void
+  highlightMissing: boolean
 }) {
+  const required = isQuestionRequired(question)
+  const answered = isQuestionAnswered(question, value)
+  const showRequiredError = required && highlightMissing && !answered
   return (
-    <fieldset className="question-card">
+    <fieldset
+      className={
+        showRequiredError ? 'question-card missing' : 'question-card'
+      }
+      data-question-id={question.id}
+    >
       <legend>
         <span className="kicker">{question.category}</span>
         {question.prompt}
-        {question.optional ? <em className="optional-tag"> Optional</em> : null}
+        {required ? (
+          <span className="required-tag">required</span>
+        ) : (
+          <em className="optional-tag"> Optional</em>
+        )}
       </legend>
       {question.helper ? <p className="helper">{question.helper}</p> : null}
       {question.type === 'single' ? (
@@ -219,6 +295,12 @@ function QuestionCard({
       {question.type === 'text' ? (
         <TextInput onChange={onChange} question={question} value={value} />
       ) : null}
+      {question.type === 'percent' ? (
+        <PercentInput onChange={onChange} question={question} value={value} />
+      ) : null}
+      {showRequiredError ? (
+        <p className="required-error">This question must be answered to continue.</p>
+      ) : null}
     </fieldset>
   )
 }
@@ -233,8 +315,8 @@ function DisclaimerBanner({
   if (!visible) return null
   return (
     <div className="disclaimer-banner" role="alert">
-      <div>
-        <strong>Open source reference tool.</strong> This assistant is a community-built guide for scoping conversations. It is not an official Microsoft product or support offering. Always validate the recommendation with sizing, licensing, validated hardware, and a formal architecture review.
+      <div className="disclaimer-text">
+        <strong>Open source reference tool.</strong> Not an official Microsoft product or support offering. Always validate with sizing, licensing, validated hardware, and a formal architecture review.
       </div>
       <button className="ghost" onClick={onDismiss} type="button">
         Got it
@@ -250,6 +332,7 @@ function SummarySidebar({
   onJump,
   activeStepId,
   totalAnswered,
+  totalVisibleRequired,
 }: {
   result: EvaluationResult
   visible: Stage[]
@@ -257,13 +340,14 @@ function SummarySidebar({
   onJump: (id: string) => void
   activeStepId: string
   totalAnswered: number
+  totalVisibleRequired: number
 }) {
   return (
     <aside className="summary-rail" aria-label="Engagement summary">
       <div className="summary-block">
         <span className="kicker">Engagement summary</span>
         <p className="summary-line">
-          {totalAnswered} of {totalRequiredQuestions} required answers captured.
+          {totalAnswered} of {totalVisibleRequired} required answers captured.
         </p>
         <ul className="env-list">
           {result.environmentSummary.sites !== undefined ? (
@@ -278,11 +362,16 @@ function SummarySidebar({
           {result.environmentSummary.cores !== undefined ? (
             <li><span>Cores</span><strong>{result.environmentSummary.cores}</strong></li>
           ) : null}
+          {result.environmentSummary.linuxPercent !== undefined ? (
+            <li>
+              <span>Guest OS</span>
+              <strong>
+                {result.environmentSummary.linuxPercent}% Linux / {result.environmentSummary.windowsPercent}% Windows
+              </strong>
+            </li>
+          ) : null}
           {result.environmentSummary.virtualDesktops !== undefined ? (
             <li><span>Virtual desktops</span><strong>{result.environmentSummary.virtualDesktops}</strong></li>
-          ) : null}
-          {result.environmentSummary.guestOs ? (
-            <li><span>Guest OS mix</span><strong>{result.environmentSummary.guestOs}</strong></li>
           ) : null}
           {result.environmentSummary.targetProduct ? (
             <li><span>Target product</span><strong>{result.environmentSummary.targetProduct}</strong></li>
@@ -295,7 +384,7 @@ function SummarySidebar({
         <ul className="summary-stages">
           {visible.map((stage) => {
             const answered = stageAnsweredCount(stage, state)
-            const total = stage.questions.length
+            const total = stageVisibleCount(stage, state)
             const isComplete = isStageComplete(stage, state)
             const isActive = stage.id === activeStepId
             return (
@@ -326,9 +415,15 @@ function SummarySidebar({
           <span className="kicker">Top recommendations</span>
           <ul className="summary-recs">
             {result.recommendations.slice(0, 3).map((rec) => (
-              <li key={rec.pattern.id}>
+              <li key={`${rec.pattern.id}-${rec.role}`}>
                 <strong>{rec.pattern.shortName}</strong>
-                <small>{rec.role === 'primary' ? 'Primary' : rec.role === 'workload-specific' ? 'Hybrid workload split' : 'Alternative'}</small>
+                <small>
+                  {rec.role === 'primary'
+                    ? 'Primary'
+                    : rec.role === 'workload-specific'
+                      ? 'Hybrid workload split'
+                      : 'Alternative'}
+                </small>
               </li>
             ))}
           </ul>
@@ -336,12 +431,47 @@ function SummarySidebar({
       ) : (
         <div className="summary-block muted-block">
           <span className="kicker">Recommendation</span>
-          <p>
-            Answer at least {Math.ceil(totalRequiredQuestions * 0.6)} required questions to unlock the deterministic recommendation.
-          </p>
+          <p>Answer the required questions to unlock the deterministic recommendation.</p>
         </div>
       )}
     </aside>
+  )
+}
+
+function LeanVisualizer({ result }: { result: EvaluationResult }) {
+  const lean = result.leanScore
+  const knobLeft = `${Math.max(0, Math.min(100, 50 + lean / 2))}%`
+  const verdict =
+    lean > 15
+      ? 'Inputs lean toward Azure Local'
+      : lean < -15
+        ? 'Inputs lean toward Hyper-V'
+        : 'Balanced — both options remain viable'
+  return (
+    <div className="lean-visualizer">
+      <div className="lean-track">
+        <span className="lean-end lean-end-hv">
+          {versionData.windowsServer.label} — Hyper-V
+        </span>
+        <div className="lean-bar">
+          <div className="lean-knob" style={{ left: knobLeft }} aria-hidden="true" />
+        </div>
+        <span className="lean-end lean-end-al">{versionData.azureLocal.label}</span>
+      </div>
+      <div className="lean-meta">
+        <span className="lean-score">
+          Lean: <strong>{lean > 0 ? `+${lean}` : lean}</strong>
+        </span>
+        <span className="lean-verdict">{verdict}</span>
+      </div>
+      <div className="lean-totals">
+        <span>Azure Local signal: <strong>{result.azureLocalTotal}</strong></span>
+        <span>Hyper-V signal: <strong>{result.hyperVTotal}</strong></span>
+        {result.azureNativeAffinity > 0 ? (
+          <span>Azure-native affinity: <strong>{result.azureNativeAffinity}</strong></span>
+        ) : null}
+      </div>
+    </div>
   )
 }
 
@@ -408,17 +538,22 @@ function RecommendationCard({ rec }: { rec: Recommendation }) {
 function ResultView({
   result,
   onRestart,
+  onShare,
+  shareToast,
 }: {
   result: EvaluationResult
   onRestart: () => void
+  onShare: () => void
+  shareToast: string
 }) {
+  const [pptxState, setPptxState] = useState<'idle' | 'building' | 'done' | 'error'>('idle')
   if (!result.ready) {
     return (
       <div className="result-view">
         <section className="result-card highlighted">
           <h3>More information needed</h3>
           <p>
-            Answer the questions in earlier stages to unlock the deterministic recommendation. The assistant deliberately does not show a recommendation before enough environment data is captured.
+            Answer the required questions in earlier stages to unlock the deterministic recommendation. The assistant deliberately does not show a recommendation before enough environment data is captured.
           </p>
           <p>Still missing for example:</p>
           <ul>
@@ -440,6 +575,19 @@ function ResultView({
     downloadFile('migration-decision-result.json', JSON.stringify(result, replacer, 2), 'application/json')
   }
 
+  const exportPptx = async () => {
+    setPptxState('building')
+    try {
+      await generatePptx(result)
+      setPptxState('done')
+      window.setTimeout(() => setPptxState('idle'), 3000)
+    } catch (err) {
+      console.error(err)
+      setPptxState('error')
+      window.setTimeout(() => setPptxState('idle'), 4000)
+    }
+  }
+
   return (
     <div className="result-view">
       <header className="result-header">
@@ -451,17 +599,38 @@ function ResultView({
           </p>
         </div>
         <div className="result-actions">
+          <button onClick={exportPptx} type="button">
+            {pptxState === 'building'
+              ? 'Building PPTX…'
+              : pptxState === 'done'
+                ? 'PPTX downloaded ✓'
+                : pptxState === 'error'
+                  ? 'PPTX error — retry'
+                  : 'Generate report (PPTX)'}
+          </button>
           <button onClick={exportMarkdown} type="button">
             Export markdown
           </button>
           <button onClick={exportJson} type="button">
             Export JSON
           </button>
+          <button className="ghost" onClick={onShare} type="button">
+            {shareToast || 'Copy share link'}
+          </button>
           <button className="ghost" onClick={onRestart} type="button">
             Start over
           </button>
         </div>
       </header>
+
+      <section className="result-card">
+        <span className="kicker">Where your inputs land</span>
+        <h3>Azure Local vs Hyper-V on Windows Server</h3>
+        <p>
+          Both options remain valid — the slider shows where the captured inputs lean today. Azure-native (cloud-first) is also worth considering for the right workloads.
+        </p>
+        <LeanVisualizer result={result} />
+      </section>
 
       {result.hybridRecommended && result.hybridRationale ? (
         <section className="result-card highlighted">
@@ -476,6 +645,141 @@ function ResultView({
           <RecommendationCard key={`${rec.pattern.id}-${rec.role}`} rec={rec} />
         ))}
       </section>
+
+      <section className="result-card">
+        <h3>Pros, cons, and when each option fits</h3>
+        <p>Use this side-by-side to frame the decision conversation. None of these options are excluded by default.</p>
+        <div className="proscons-grid">
+          {result.prosCons.map((block) => {
+            const cls =
+              block.option === 'azureLocal'
+                ? 'proscons-card azure-local'
+                : block.option === 'hyperV'
+                  ? 'proscons-card hyper-v'
+                  : 'proscons-card azure-native'
+            return (
+              <article className={cls} key={block.option}>
+                <h4>{block.title}</h4>
+                <h5>Pros</h5>
+                <ul>
+                  {block.pros.map((p) => (
+                    <li key={p}>{p}</li>
+                  ))}
+                </ul>
+                <h5>Cons</h5>
+                <ul>
+                  {block.cons.map((c) => (
+                    <li key={c}>{c}</li>
+                  ))}
+                </ul>
+              </article>
+            )
+          })}
+        </div>
+        <div className="when-grid">
+          <div className="when-card al">
+            <span className="kicker">Choose Azure Local when</span>
+            <ul>
+              {result.consideration.whenAzureLocal.map((s) => (
+                <li key={s}>{s}</li>
+              ))}
+            </ul>
+          </div>
+          <div className="when-card hv">
+            <span className="kicker">Choose Hyper-V when</span>
+            <ul>
+              {result.consideration.whenHyperV.map((s) => (
+                <li key={s}>{s}</li>
+              ))}
+            </ul>
+          </div>
+          <div className="when-card az">
+            <span className="kicker">Consider Azure-native when</span>
+            <ul>
+              {result.consideration.whenAzureNative.map((s) => (
+                <li key={s}>{s}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+        <div className="risks-row">
+          <h4>Risks per option</h4>
+          <ul>
+            {result.consideration.risks.map((r) => (
+              <li key={r.option + r.risk}>
+                <strong>
+                  {r.option === 'azureLocal'
+                    ? 'Azure Local'
+                    : r.option === 'hyperV'
+                      ? 'Hyper-V'
+                      : 'Azure-native'}
+                  :
+                </strong>{' '}
+                {r.risk}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </section>
+
+      {result.containerPlatform ? (
+        <section className="result-card">
+          <span className="kicker">Container platform guidance</span>
+          <h3>
+            {result.containerPlatform.recommendation === 'aksOnLocal'
+              ? 'AKS on Azure Local fits the captured inputs'
+              : result.containerPlatform.recommendation === 'aro'
+                ? 'Azure Red Hat OpenShift (ARO) fits the captured inputs'
+                : 'Evaluate AKS on Azure Local and ARO together'}
+          </h3>
+          <ul>
+            {result.containerPlatform.rationale.map((r) => (
+              <li key={r}>{r}</li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {result.migrationEffort ? (
+        <section className="result-card">
+          <span className="kicker">Migration effort estimate</span>
+          <h3>{result.migrationEffort.approachLabel}</h3>
+          <div className="effort-grid">
+            <div>
+              <span className="kicker">VMs</span>
+              <strong>{result.migrationEffort.totalVmsMigrated}</strong>
+            </div>
+            <div>
+              <span className="kicker">Parallel / wave</span>
+              <strong>{result.migrationEffort.parallelPerWave}</strong>
+            </div>
+            <div>
+              <span className="kicker">Waves</span>
+              <strong>{result.migrationEffort.waves}</strong>
+            </div>
+            <div>
+              <span className="kicker">Effort hours</span>
+              <strong>~{result.migrationEffort.estimatedHours}h</strong>
+            </div>
+            <div>
+              <span className="kicker">Calendar weeks</span>
+              <strong>~{result.migrationEffort.estimatedWeeks}</strong>
+            </div>
+            <div>
+              <span className="kicker">Complexity</span>
+              <strong>{result.migrationEffort.complexity}</strong>
+            </div>
+          </div>
+          <ul>
+            {result.migrationEffort.notes.map((n) => (
+              <li key={n}>{n}</li>
+            ))}
+          </ul>
+          <p className="muted">
+            Planning estimate only. Confirm with formal sizing, validated hardware, and Microsoft / partner delivery teams.
+          </p>
+        </section>
+      ) : null}
 
       {result.overlays.length > 0 ? (
         <section className="result-card">
@@ -507,8 +811,7 @@ function ResultView({
       <section className="result-card">
         <h3>Azure Local vs. Hyper-V — decision matrix</h3>
         <p>
-          A side-by-side view of the dimensions that drive the choice between Azure Local and Hyper-V on Windows Server. The
-          final row shows where your inputs lean.
+          A side-by-side view of the dimensions that drive the choice between Azure Local and Hyper-V on Windows Server, including the IT operations features admins care about most.
         </p>
         <div className="matrix-table">
           <div className="matrix-row matrix-head">
@@ -557,7 +860,7 @@ function ResultView({
         <span className="kicker">Microsoft Global Delivery — Unified</span>
         <h3>Reach out to your Microsoft representative</h3>
         <p>
-          For Azure Local upskilling workshops, activation, migration delivery, Day-2 operations, and landing zone services, work with your Microsoft account team and Microsoft Unified delivery teams.
+          For Azure Local upskilling workshops, activation, migration delivery, Day-2 operations, and landing zone services, work with your Microsoft account team. Ask to be connected with a Customer Success Account Manager (CSAM) or a CSA / Global Delivery Program Lead.
         </p>
         <div className="rec-links">
           <a href="https://www.microsoft.com/en-us/microsoft-unified" rel="noreferrer" target="_blank">
@@ -583,13 +886,23 @@ function ResultView({
 }
 
 function App() {
-  const [answers, setAnswers] = useState<AnswerSet>({})
+  const [answers, setAnswers] = useState<AnswerSet>(() => {
+    const shared = readSharedAnswers()
+    if (shared) {
+      clearSharedAnswers()
+      return shared
+    }
+    return {}
+  })
   const [activeStepId, setActiveStepId] = useState<string>(stages[0].id)
   const [theme, setTheme] = useState<Theme>(initialTheme())
   const [showDisclaimer, setShowDisclaimer] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true
     return window.localStorage.getItem(DISMISS_KEY) !== '1'
   })
+  const [navOpen, setNavOpen] = useState(false)
+  const [highlightMissing, setHighlightMissing] = useState(false)
+  const [shareToast, setShareToast] = useState('')
 
   const workspaceRef = useRef<HTMLDivElement | null>(null)
 
@@ -601,6 +914,7 @@ function App() {
     () => [
       ...visible.map((stage) => ({ id: stage.id, label: stage.shortTitle, kind: 'stage' as const, stage })),
       { id: RESULT_STEP_ID, label: 'Result', kind: 'result' as const },
+      { id: RFP_STEP_ID, label: 'RFI / RFP · Preview', kind: 'rfp' as const },
     ],
     [visible],
   )
@@ -608,45 +922,67 @@ function App() {
   const activeIndex = Math.max(0, steps.findIndex((step) => step.id === activeStepId))
   const safeStep = steps[activeIndex] ?? steps[steps.length - 1]
   const isResultStep = safeStep.kind === 'result'
+  const isRfpStep = safeStep.kind === 'rfp'
   const activeStage = safeStep.kind === 'stage' ? safeStep.stage : undefined
 
-  const totalApplicable = visible.reduce((count, stage) => count + stage.questions.length, 0)
-  const totalAnswered = Object.entries(answers).filter(([key, value]) => {
-    const question = visible.flatMap((stage) => stage.questions).find((q) => q.id === key)
-    if (!question) return false
-    if (question.type === 'number') return typeof value === 'number' && Number.isFinite(value)
-    if (question.type === 'text') return typeof value === 'string' && value.trim().length > 0
-    return typeof value === 'string' && value.length > 0
-  }).length
+  const totalVisibleRequired = visible.reduce(
+    (count, stage) =>
+      count +
+      visibleQuestionsForStage(stage, state).filter(isQuestionRequired).length,
+    0,
+  )
+  const totalAnswered = visible.reduce(
+    (count, stage) =>
+      count +
+      visibleQuestionsForStage(stage, state).filter(
+        (q) => isQuestionRequired(q) && isQuestionAnswered(q, answers[q.id]),
+      ).length,
+    0,
+  )
 
   const progressPercent = isResultStep
     ? 100
-    : Math.min(100, Math.round(((activeIndex + 1) / steps.length) * 100))
+    : isRfpStep
+      ? 100
+      : Math.min(100, Math.round(((activeIndex + 1) / (steps.length - 1)) * 100))
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
     if (typeof window !== 'undefined') window.localStorage.setItem(THEME_KEY, theme)
   }, [theme])
 
-  useEffect(() => {
+  const navigateToStep = (id: string) => {
+    setActiveStepId(id)
+    setHighlightMissing(false)
+    setNavOpen(false)
     if (typeof window !== 'undefined') {
       window.scrollTo({ top: 0, behavior: 'smooth' })
     }
     workspaceRef.current?.scrollTo?.({ top: 0, behavior: 'smooth' })
-  }, [activeStepId])
+  }
+
+  const goToStep = (id: string) => {
+    if (steps.some((step) => step.id === id)) navigateToStep(id)
+  }
 
   const goNext = () => {
+    if (activeStage) {
+      const missing = stageMissingRequired(activeStage, state)
+      if (missing.length > 0) {
+        setHighlightMissing(true)
+        const first = missing[0]
+        const node = document.querySelector(`[data-question-id="${first.id}"]`) as HTMLElement | null
+        node?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        return
+      }
+    }
     const nextIndex = Math.min(steps.length - 1, activeIndex + 1)
-    setActiveStepId(steps[nextIndex].id)
+    navigateToStep(steps[nextIndex].id)
   }
 
   const goBack = () => {
     const prevIndex = Math.max(0, activeIndex - 1)
-    setActiveStepId(steps[prevIndex].id)
-  }
-
-  const goToStep = (id: string) => {
-    if (steps.some((step) => step.id === id)) setActiveStepId(id)
+    navigateToStep(steps[prevIndex].id)
   }
 
   const updateAnswer = (questionId: string, value: AnswerValue) => {
@@ -655,7 +991,7 @@ function App() {
 
   const restart = () => {
     setAnswers({})
-    setActiveStepId(stages[0].id)
+    navigateToStep(stages[0].id)
   }
 
   const dismissDisclaimer = () => {
@@ -665,11 +1001,48 @@ function App() {
 
   const toggleTheme = () => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))
 
+  const copyShareLink = async () => {
+    const url = buildShareUrl(answers)
+    if (!url) return
+    try {
+      await navigator.clipboard.writeText(url)
+      setShareToast('Share link copied ✓')
+    } catch {
+      setShareToast('Copy failed — link in console')
+      console.log('Share link:', url)
+    }
+    window.setTimeout(() => setShareToast(''), 2500)
+  }
+
+  const headerSubtitle = isRfpStep
+    ? 'RFI / RFP companion in preview'
+    : isResultStep
+      ? 'Result'
+      : `Stage ${activeIndex + 1} of ${steps.length - 2}`
+
+  const headerTitle = isRfpStep
+    ? 'RFI / RFP companion'
+    : isResultStep
+      ? 'Recommended path'
+      : activeStage?.title ?? ''
+
   return (
     <div className="app-shell">
       <DisclaimerBanner onDismiss={dismissDisclaimer} visible={showDisclaimer} />
 
-      <aside className="nav-rail" aria-label="Wizard navigation">
+      <button
+        aria-label="Toggle navigation"
+        className="nav-toggle"
+        onClick={() => setNavOpen((open) => !open)}
+        type="button"
+      >
+        ☰ Steps
+      </button>
+
+      <aside
+        className={navOpen ? 'nav-rail open' : 'nav-rail'}
+        aria-label="Wizard navigation"
+      >
         <div className="brand">
           <Logo size={44} />
           <div>
@@ -682,12 +1055,14 @@ function App() {
           {steps.map((step, index) => {
             const isActive = step.id === safeStep.id
             const isComplete = step.kind === 'stage' ? isStageComplete(step.stage, state) : false
+            const isPreview = step.kind === 'rfp'
             return (
               <li
                 className={[
                   'nav-step',
                   isActive ? 'active' : '',
                   isComplete ? 'complete' : '',
+                  isPreview ? 'preview' : '',
                 ]
                   .filter(Boolean)
                   .join(' ')}
@@ -696,6 +1071,7 @@ function App() {
                 <button onClick={() => goToStep(step.id)} type="button">
                   <span className="step-index">{index + 1}</span>
                   <span className="step-label">{step.label}</span>
+                  {isPreview ? <span className="preview-tag">Preview</span> : null}
                 </button>
               </li>
             )
@@ -714,11 +1090,14 @@ function App() {
       <main className="workspace" ref={workspaceRef}>
         <header className="workspace-header">
           <div>
-            <p className="kicker">
-              {isResultStep ? 'Result' : `Stage ${activeIndex + 1} of ${steps.length - 1}`}
-            </p>
-            <h1>{isResultStep ? 'Recommended path' : activeStage?.title}</h1>
+            <p className="kicker">{headerSubtitle}</p>
+            <h1>{headerTitle}</h1>
             {activeStage ? <p>{activeStage.description}</p> : null}
+            {isRfpStep ? (
+              <p>
+                A curated answer bank for sales and pre-sales teams responding to RFI / RFP requests. This module is in preview while we expand coverage.
+              </p>
+            ) : null}
           </div>
           <div className="header-tools">
             <button
@@ -739,29 +1118,44 @@ function App() {
           </div>
         </header>
 
-        <div className="progress">
-          <div className="progress-bar">
-            <span style={{ width: `${progressPercent}%` }} />
+        {!isRfpStep ? (
+          <div className="progress">
+            <div className="progress-bar">
+              <span style={{ width: `${progressPercent}%` }} />
+            </div>
+            <small>
+              {totalAnswered} of {totalVisibleRequired} required answers captured
+              {isResultStep ? ' — recommendation ready below.' : '.'}
+            </small>
           </div>
-          <small>
-            {totalAnswered} of {totalApplicable} questions answered ·{' '}
-            {Math.min(100, Math.round((totalAnswered / Math.max(totalRequiredQuestions, 1)) * 100))}% of required inputs
-          </small>
-        </div>
+        ) : null}
 
         <section className="workspace-body">
-          {isResultStep ? (
-            <ResultView onRestart={restart} result={result} />
+          {isRfpStep ? (
+            <RfpSection />
+          ) : isResultStep ? (
+            <ResultView
+              onRestart={restart}
+              onShare={copyShareLink}
+              result={result}
+              shareToast={shareToast}
+            />
           ) : activeStage ? (
             <div className="questions">
-              {activeStage.questions.map((question) => (
+              {visibleQuestionsForStage(activeStage, state).map((question) => (
                 <QuestionCard
+                  highlightMissing={highlightMissing}
                   key={question.id}
                   onChange={updateAnswer}
                   question={question}
                   value={answers[question.id]}
                 />
               ))}
+              {highlightMissing ? (
+                <p className="missing-banner">
+                  Some required questions are not answered yet. Scroll to the highlighted ones above and pick a value before continuing.
+                </p>
+              ) : null}
             </div>
           ) : null}
         </section>
@@ -781,14 +1175,17 @@ function App() {
                 Open an issue
               </a>
             </small>
+            <small className="privacy-note">
+              No data you enter is stored or sent anywhere. The tool runs in your browser. You can also clone and run the app locally — see <a href={REPO_URL} rel="noreferrer" target="_blank">the repository</a>.
+            </small>
           </div>
-          {isResultStep ? (
-            <button onClick={restart} type="button">
-              Start over
+          {isResultStep || isRfpStep ? (
+            <button onClick={isRfpStep ? () => goToStep(stages[0].id) : restart} type="button">
+              {isRfpStep ? 'Back to wizard' : 'Start over'}
             </button>
           ) : (
             <button onClick={goNext} type="button">
-              {activeIndex >= steps.length - 2 ? 'View result →' : 'Continue →'}
+              {activeIndex >= steps.length - 3 ? 'View result →' : 'Continue →'}
             </button>
           )}
         </footer>
@@ -800,6 +1197,7 @@ function App() {
         result={result}
         state={state}
         totalAnswered={totalAnswered}
+        totalVisibleRequired={totalVisibleRequired}
         visible={visible}
       />
     </div>
