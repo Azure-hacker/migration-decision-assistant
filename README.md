@@ -1,93 +1,75 @@
 # Migration Decision Assistant
 
-A customer-ready, deterministic web application that helps you choose between three migration paths:
+> Open source reference guide for scoping conversations between **Azure Local** and **Windows Server / Hyper-V** deployment patterns.
 
-1. Windows Server / Hyper-V
-2. Azure Local
-3. Azure-native (cloud-first), recommended only when the score clearly leans there
+🌐 **Live site:** https://azure-hacker.github.io/migration-decision-assistant/
 
-The assistant uses a multi-stage branching questionnaire, deterministic scoring rules, and dynamic documentation links. It does not rely on freeform AI reasoning.
+---
+
+## What it is
+
+The Migration Decision Assistant is a deterministic, rule-based wizard. It asks structured questions about a customer environment (sites, hosts, VMs, cores, storage strategy, sovereignty, AVD, AKS, Foundry Local, and other strategic workloads) and returns:
+
+- One or more **recommended deployment patterns** with rationale, "best for", and "watch-outs"
+- A **side-by-side decision matrix** for Azure Local vs. Hyper-V
+- **Workload overlays** (AVD, AKS, Foundry Local, GitHub Enterprise local, M365 Local, sovereign / disconnected, migration / DR, cross-site availability)
+- A **hybrid recommendation** when both platforms score meaningfully and the workloads naturally split
+- A pointer to **Azure-native (cloud-first)** alternatives and the Azure pricing calculator
+- Links to **Microsoft Unified** offerings for delivery, activation, and Day 2 operations
+
+Patterns surfaced today:
+
+- Hyper-V Failover Cluster
+- Hyper-V Campus / stretched cluster
+- Hyper-V with iSCSI / SMB / FC SAN-attach
+- Azure Local connected hyperconverged
+- Azure Local with Resilient Cross-Site (RAC)
+- Azure Local multi-rack
+- Azure Local with disaggregated SAN
+- Azure Local Disconnected Operations (ALDO)
+
+## Who it is for
+
+- **Microsoft POD leads** scoping VMware-exit engagements
+- **Customers and partners** who want a structured, documented frame for the Azure Local vs. Hyper-V decision
+
+This tool is **not a replacement** for sizing, licensing review, validated hardware confirmation, identity / security / networking design, supportability review, or formal architecture review.
+
+## Open source disclaimer
+
+This is an **open source community tool**. It is not an official Microsoft product, support channel, or commitment. Recommendations are informational and reference the public Microsoft Learn documentation in effect at the time of evaluation.
+
+## Auto-updated reference versions
+
+Public Microsoft documentation is the single source of truth. A scheduled GitHub Actions workflow runs every 14 days, fetches the latest Azure Local and Windows Server release names from Microsoft Learn, and updates [`src/data/versions.json`](src/data/versions.json). Any change is committed automatically, which redeploys GitHub Pages.
+
+You can also trigger the refresh manually from the **Actions → auto-update-versions → Run workflow** menu.
 
 ## Tech stack
 
-- React
-- TypeScript
+- React 19 + TypeScript
 - Vite
+- GitHub Pages for hosting
+- GitHub Actions for build, deploy, and version refresh
 
-## How the recommendation works
-
-The questionnaire is grouped into stages:
-
-1. **Workload profile** — primary workload, OS mix, and footprint scale.
-2. **Placement and sovereignty** — placement requirements, connectivity, and sovereignty constraints.
-3. **Modernization signals** — AKS, Azure Virtual Desktop, and AI / GPU demand.
-4. **Migration and operations** — current platform, migration and DR posture, and operating model.
-5. **Azure Local deployment design** — drill-down shown when Azure Local is the leading recommendation.
-
-Each answer applies fixed point impacts to the three platforms across deterministic dimensions. Workload signals also activate **workload overlays**:
-
-- AI / local inference / GPU
-- AKS on Azure Local
-- Azure Virtual Desktop on Azure Local
-- Sovereign or disconnected scenarios
-- Migration and disaster recovery
-
-The Azure-native cloud path is only recommended when its score clearly leads the on-premises platforms by a fixed margin and no answer requires on-premises placement.
-
-If Azure Local wins, the drill-down stage refines the recommendation into one of:
-
-- Connected hyperconverged Azure Local
-- Disconnected operations for Azure Local
-- Disaggregated SAN for Azure Local
-- Multi-rack Azure Local
-
-## Result experience
-
-The result page provides:
-
-- Recommended platform and confidence
-- Why the recommendation won
-- Recommended Azure Local deployment type, when applicable
-- Active workload overlays
-- Architecture considerations
-- Recommended next steps
-- Documentation links rendered dynamically from the result
-- Microsoft guidance, including Odin for Azure Local, Hyper-V documentation, Microsoft Unified, and Services Hub references
-- Side-by-side comparison of all three platforms
-- Markdown and JSON export
-- Reference guidance disclaimer
-
-## Local development
+## Develop locally
 
 ```bash
 npm install
-npm run dev
+npm run dev      # local dev server
+npm run lint     # ESLint
+npm run build    # type-check + production build
+npm run preview  # preview the built site
 ```
 
-## Validation
+## Deploy
 
-```bash
-npm run lint
-npm run build
-```
+The `deploy-pages.yml` workflow builds and publishes on every push to `main`.
 
-## Public references used
+## Contribute and report issues
 
-- https://azure.github.io/odinforazurelocal/
-- https://azure.github.io/odinforazurelocal/docs/reference-architectures/
-- https://azure.github.io/odinforazurelocal/sizer/
-- https://learn.microsoft.com/en-us/azure/architecture/hybrid/azure-local-baseline
-- https://learn.microsoft.com/en-us/azure/well-architected/service-guides/azure-local
-- https://learn.microsoft.com/en-us/azure/architecture/example-scenario/hybrid/aks-baseline
-- https://learn.microsoft.com/en-us/azure/architecture/example-scenario/hybrid/aks-hybrid-azure-local
-- https://learn.microsoft.com/en-us/azure/architecture/hybrid/azure-local-workload-virtual-desktop
-- https://learn.microsoft.com/en-us/azure/virtual-desktop/azure-local-overview
-- https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/
-- https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/overview
-- https://learn.microsoft.com/en-us/services-hub/unified/services/
-- https://learn.microsoft.com/en-us/services-hub/unified/services/workshopplus
-- https://www.microsoft.com/en-us/microsoft-unified
+- Open an issue: https://github.com/Azure-hacker/migration-decision-assistant/issues/new
+- Add a deployment pattern, refine the scoring, or improve the rationale text by editing [`src/decisionEngine.ts`](src/decisionEngine.ts)
+- Improve the questionnaire by editing the `stages` array in the same file
 
-## Disclaimer
-
-This Migration Decision Assistant provides reference guidance based on the answers you supply. It does not replace formal architecture review. Customers still need workload sizing, licensing validation, validated hardware confirmation, identity and security design, networking design, supportability review, and a formal architecture review before any deployment.
+PRs welcome.

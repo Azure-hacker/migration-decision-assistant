@@ -1,0 +1,37 @@
+name: auto-update-versions
+
+on:
+  schedule:
+    # Runs every 14 days at 06:00 UTC (1st and 15th of every month).
+    - cron: '0 6 1,15 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run version refresh
+        run: node scripts/update-versions.mjs
+
+      - name: Commit and push if changed
+        run: |
+          if [[ -n "$(git status --porcelain src/data/versions.json)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add src/data/versions.json
+            git commit -m "chore: refresh Azure Local and Windows Server versions"
+            git push
+          else
+            echo "No version changes."
+          fi

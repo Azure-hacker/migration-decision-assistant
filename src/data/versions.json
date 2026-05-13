@@ -1,0 +1,19 @@
+{
+  "azureLocal": {
+    "version": "2604",
+    "label": "Azure Local 2604",
+    "docsUrl": "https://learn.microsoft.com/azure/azure-local/whats-new",
+    "overviewUrl": "https://learn.microsoft.com/azure/azure-local/overview"
+  },
+  "windowsServer": {
+    "version": "Windows Server 2025",
+    "label": "Windows Server 2025",
+    "docsUrl": "https://learn.microsoft.com/windows-server/get-started/whats-new",
+    "overviewUrl": "https://learn.microsoft.com/windows-server/virtualization/hyper-v/overview"
+  },
+  "lastChecked": "2026-05-13",
+  "sources": {
+    "azureLocalReleaseNotes": "https://learn.microsoft.com/azure/azure-local/whats-new",
+    "windowsServerReleaseNotes": "https://learn.microsoft.com/windows-server/get-started/whats-new"
+  }
+}
