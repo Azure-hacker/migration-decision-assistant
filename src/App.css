@@ -1420,3 +1420,72 @@ button.ghost:hover:not(:disabled) {
   flex: 1 1 280px;
   min-width: 0;
 }
+
+/* ---------- Implementation phases table ---------- */
+.phases-table {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.phase-row {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-elev);
+}
+
+.phase-row:last-child {
+  border-bottom: none;
+}
+
+.phase-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.phase-name {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+.phase-weeks {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--accent-cyan);
+  white-space: nowrap;
+}
+
+.phase-desc {
+  margin: 0;
+  font-size: 0.86rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* ---------- Effort GD callout ---------- */
+.effort-gd-callout {
+  margin-top: 18px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.1), rgba(34, 211, 238, 0.08));
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
+.effort-gd-callout .kicker {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.effort-gd-callout p {
+  margin: 0 0 10px;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}

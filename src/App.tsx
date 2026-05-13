@@ -16,6 +16,7 @@ import {
   type AnswerSet,
   type AnswerValue,
   type EvaluationResult,
+  type PreMigrationPhase,
   type Question,
   type Recommendation,
   type Stage,
@@ -31,7 +32,6 @@ const FEEDBACK_URL =
 const REPO_URL = 'https://github.com/Azure-hacker/migration-decision-assistant'
 const PRICING_URL = 'https://azure.microsoft.com/pricing/calculator/'
 const THEME_KEY = 'mda-theme'
-const DISMISS_KEY = 'mda-disclaimer-dismissed'
 
 type Theme = 'dark' | 'light'
 
@@ -92,7 +92,7 @@ const buildMarkdown = (result: EvaluationResult) => {
     lines.push(`- VMs in scope: ${me.totalVmsMigrated}`)
     lines.push(`- Parallel per wave: ${me.parallelPerWave}`)
     lines.push(`- Waves: ${me.waves}`)
-    lines.push(`- Estimated effort: ${me.estimatedHours}h (~${me.estimatedWeeks} weeks)`)
+    lines.push(`- Estimated effort: ${me.estimatedHours}h engineer time (~${me.totalCalendarWeeks} total calendar weeks including pre-migration)`)
     lines.push(`- Complexity: ${me.complexity}`)
     me.notes.forEach((n) => lines.push(`- Note: ${n}`))
     lines.push('')
@@ -535,6 +535,88 @@ function RecommendationCard({ rec }: { rec: Recommendation }) {
   )
 }
 
+function MigrationEffortCard({ effort }: { effort: import('./decisionEngine').MigrationEffort }) {
+  return (
+    <section className="result-card">
+      <span className="kicker">Migration effort estimate</span>
+      <h3>
+        {effort.approachLabel}
+        {effort.approachPreview ? <span className="preview-tag" style={{ marginLeft: 10 }}>Preview</span> : null}
+      </h3>
+
+      <div className="effort-grid">
+        <div>
+          <span className="kicker">VMs to migrate</span>
+          <strong>{effort.totalVmsMigrated}</strong>
+        </div>
+        <div>
+          <span className="kicker">Parallel / wave</span>
+          <strong>{effort.parallelPerWave}</strong>
+        </div>
+        <div>
+          <span className="kicker">Migration waves</span>
+          <strong>{effort.waves}</strong>
+        </div>
+        <div>
+          <span className="kicker">Engineer effort</span>
+          <strong>~{effort.estimatedHours}h</strong>
+        </div>
+        <div>
+          <span className="kicker">Migration execution</span>
+          <strong>~{effort.migrationWeeks} wks</strong>
+        </div>
+        <div>
+          <span className="kicker">Total calendar</span>
+          <strong style={{ color: 'var(--accent-amber)' }}>~{effort.totalCalendarWeeks} wks</strong>
+        </div>
+      </div>
+
+      {effort.preMigrationPhases.length > 0 ? (
+        <>
+          <h4 style={{ marginTop: 20, marginBottom: 10 }}>Implementation phases</h4>
+          <div className="phases-table">
+            {effort.preMigrationPhases.map((phase: PreMigrationPhase) => (
+              <div key={phase.phase} className="phase-row">
+                <div className="phase-meta">
+                  <span className="phase-name">{phase.phase}</span>
+                  <span className="phase-weeks">{phase.weeks} wks</span>
+                </div>
+                <p className="phase-desc">{phase.description}</p>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : null}
+
+      {effort.notes.length > 0 ? (
+        <ul style={{ marginTop: 14 }}>
+          {effort.notes.map((n) => (
+            <li key={n}>{n}</li>
+          ))}
+        </ul>
+      ) : null}
+
+      <div className="effort-gd-callout">
+        <span className="kicker">Microsoft Global Delivery — Unified</span>
+        <p>
+          For migration delivery on both Azure Local and Hyper-V on Windows Server, Microsoft Global Delivery (Unified) offers structured programs: upskilling workshops (WorkshopPLUS), activation services, landing zone delivery, Day-2 operations, and managed migration waves.
+          Reach out to your Microsoft account team and ask to be connected with a <strong>CSA / Global Delivery Program Lead</strong>.
+        </p>
+        <div className="rec-links">
+          <a href="https://www.microsoft.com/en-us/microsoft-unified" rel="noreferrer" target="_blank">Microsoft Unified →</a>
+          <a href="https://learn.microsoft.com/en-us/services-hub/unified/services/workshopplus" rel="noreferrer" target="_blank">WorkshopPLUS →</a>
+        </div>
+      </div>
+
+      <p className="muted" style={{ marginTop: 12 }}>
+        Planning estimate only — based on {effort.totalVmsMigrated} VMs at ~{effort.parallelPerWave} VMs/wave, {effort.waves} waves, ~{effort.migrationWeeks} execution weeks + ~{effort.preMigrationWeeks} pre-migration weeks.
+        Confirm with formal sizing, validated hardware, staffing plan, and Microsoft / partner delivery teams.
+      </p>
+    </section>
+  )
+}
+
+
 function ResultView({
   result,
   onRestart,
@@ -741,44 +823,7 @@ function ResultView({
       ) : null}
 
       {result.migrationEffort ? (
-        <section className="result-card">
-          <span className="kicker">Migration effort estimate</span>
-          <h3>{result.migrationEffort.approachLabel}</h3>
-          <div className="effort-grid">
-            <div>
-              <span className="kicker">VMs</span>
-              <strong>{result.migrationEffort.totalVmsMigrated}</strong>
-            </div>
-            <div>
-              <span className="kicker">Parallel / wave</span>
-              <strong>{result.migrationEffort.parallelPerWave}</strong>
-            </div>
-            <div>
-              <span className="kicker">Waves</span>
-              <strong>{result.migrationEffort.waves}</strong>
-            </div>
-            <div>
-              <span className="kicker">Effort hours</span>
-              <strong>~{result.migrationEffort.estimatedHours}h</strong>
-            </div>
-            <div>
-              <span className="kicker">Calendar weeks</span>
-              <strong>~{result.migrationEffort.estimatedWeeks}</strong>
-            </div>
-            <div>
-              <span className="kicker">Complexity</span>
-              <strong>{result.migrationEffort.complexity}</strong>
-            </div>
-          </div>
-          <ul>
-            {result.migrationEffort.notes.map((n) => (
-              <li key={n}>{n}</li>
-            ))}
-          </ul>
-          <p className="muted">
-            Planning estimate only. Confirm with formal sizing, validated hardware, and Microsoft / partner delivery teams.
-          </p>
-        </section>
+        <MigrationEffortCard effort={result.migrationEffort} />
       ) : null}
 
       {result.overlays.length > 0 ? (
@@ -890,16 +935,18 @@ function App() {
     const shared = readSharedAnswers()
     if (shared) {
       clearSharedAnswers()
-      return shared
+      return shared.answers
     }
     return {}
   })
-  const [activeStepId, setActiveStepId] = useState<string>(stages[0].id)
-  const [theme, setTheme] = useState<Theme>(initialTheme())
-  const [showDisclaimer, setShowDisclaimer] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return true
-    return window.localStorage.getItem(DISMISS_KEY) !== '1'
+  const [activeStepId, setActiveStepId] = useState<string>(() => {
+    const shared = readSharedAnswers()
+    if (shared?.goToResult) return RESULT_STEP_ID
+    return stages[0].id
   })
+  const [theme, setTheme] = useState<Theme>(initialTheme())
+  // Disclaimer shows on every page load; dismissed only for this session (no localStorage persist)
+  const [showDisclaimer, setShowDisclaimer] = useState<boolean>(true)
   const [navOpen, setNavOpen] = useState(false)
   const [highlightMissing, setHighlightMissing] = useState(false)
   const [shareToast, setShareToast] = useState('')
@@ -996,7 +1043,6 @@ function App() {
 
   const dismissDisclaimer = () => {
     setShowDisclaimer(false)
-    if (typeof window !== 'undefined') window.localStorage.setItem(DISMISS_KEY, '1')
   }
 
   const toggleTheme = () => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))

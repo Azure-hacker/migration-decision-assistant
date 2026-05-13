@@ -211,16 +211,26 @@ export type ContainerPlatformVerdict = {
   rationale: string[]
 }
 
+export type PreMigrationPhase = {
+  phase: string
+  weeks: string
+  description: string
+}
+
 export type MigrationEffort = {
   approach: 'azureMigrate' | 'wacVmode' | 'scvmm' | 'mixed'
   approachLabel: string
+  approachPreview?: boolean
   totalVmsMigrated: number
   parallelPerWave: number
   waves: number
   estimatedHours: number
-  estimatedWeeks: number
+  migrationWeeks: number
+  preMigrationWeeks: number
+  totalCalendarWeeks: number
   complexity: 'low' | 'moderate' | 'elevated' | 'high'
   notes: string[]
+  preMigrationPhases: PreMigrationPhase[]
 }
 
 export type EnvironmentSummary = {
@@ -1718,51 +1728,120 @@ const computeMigrationEffort = (
   const primaryFamily = recommendations[0]?.pattern.family
 
   let approach: MigrationEffort['approach'] = 'mixed'
-  let approachLabel = 'Mixed Microsoft and partner tooling'
-  let parallelPerHost = 6
-  let hoursPerVm = 2
+  let approachLabel = 'Mixed Microsoft tooling'
+  let approachPreview: boolean | undefined
+  // VMs per working day (calendar model, not person-hours)
+  let vmsPerDay = 45
+  // Person-minutes of engineer effort per VM (used for effort-hour estimate)
+  let minutesPerVm = 30
   const notes: string[] = []
 
   if (tool === 'wac-vmode') {
     approach = 'wacVmode'
-    approachLabel = 'Windows Admin Center vMode'
-    parallelPerHost = 8
-    hoursPerVm = 1.5
-    notes.push('WAC vMode supports wave-based migrations with IP preservation and Gen2 conversion where supported by the guest OS.')
-    notes.push('Validate Gen1 vs Gen2 readiness — UEFI-capable Linux and Windows guests can be promoted to Gen2.')
+    approachLabel = 'Windows Admin Center vMode (Preview)'
+    approachPreview = true
+    vmsPerDay = 25
+    minutesPerVm = 45
+    notes.push('⚠ WAC vMode is currently in Preview — plan for additional validation cycles and potential tooling gaps.')
+    notes.push('WAC vMode supports wave-based migrations with IP preservation and Gen2 conversion where the guest OS supports UEFI.')
+    notes.push('Validate Gen1 vs Gen2 readiness before each wave — Windows Server 2012+ and modern Linux can be promoted to Gen2.')
   } else if (tool === 'azure-migrate') {
     approach = 'azureMigrate'
     approachLabel = 'Azure Migrate (assessment + replication)'
-    parallelPerHost = 10
-    hoursPerVm = 2.5
-    notes.push('Azure Migrate scales replication in batches; size the appliance and bandwidth before each wave.')
-    notes.push('Static IP preservation typically requires planned IP remap or routing changes — design for it.')
+    vmsPerDay = 60
+    minutesPerVm = 20
+    notes.push('Azure Migrate scales replication in batches up to 100 VMs simultaneously per appliance.')
+    notes.push('Size appliance VM, storage, and WAN bandwidth before each wave.')
+    notes.push('Static IP preservation requires planned IP remap or routing changes — design the IP reclaim strategy early.')
   } else if (tool === 'scvmm') {
     approach = 'scvmm'
     approachLabel = 'SCVMM-led migration to Hyper-V'
-    parallelPerHost = 5
-    hoursPerVm = 2
-    notes.push('SCVMM converts and lands VMs on Hyper-V Failover targets using existing operations skills.')
-    notes.push('Plan SCVMM library, runbooks, and licensing alongside Hyper-V cluster targets.')
-  } else if (tool === 'mixed' || !tool) {
-    approach = 'mixed'
-    approachLabel = 'Mixed Microsoft and partner tooling'
-    parallelPerHost = 6
-    hoursPerVm = 2.25
-    notes.push('Pick a primary tool per wave; mixing tools needs explicit handoff and validation steps.')
+    vmsPerDay = 40
+    minutesPerVm = 30
+    notes.push('SCVMM converts and lands VMs on Hyper-V failover cluster targets using familiar operations workflows.')
+    notes.push('Plan SCVMM library shares, runbooks, profiles, and Hyper-V host licensing alongside cluster sizing.')
+  } else {
+    notes.push('Define the primary tool per workload stream before beginning; mixing tools needs explicit handoff and validation steps.')
   }
+
+  // Scale vmsPerDay slightly by team size proxy (larger host estate → larger migration team expected)
+  const scaledVmsPerDay = hosts > 30
+    ? Math.min(Math.round(vmsPerDay * 1.5), vmsPerDay * 2)
+    : hosts > 15
+      ? Math.min(Math.round(vmsPerDay * 1.2), vmsPerDay * 2)
+      : vmsPerDay
+
+  // parallelPerWave is per-day throughput / estimated waves per day (2 waves/day typical)
+  const wavesPerDay = 2
+  const parallelPerWave = Math.round(scaledVmsPerDay / wavesPerDay)
+  const waves = Math.max(1, Math.ceil(vms / parallelPerWave))
+
+  // Calendar execution timeline
+  const migrationDays = Math.ceil(vms / scaledVmsPerDay)
+  const migrationWeeks = Math.max(1, Math.ceil(migrationDays / 5))
+
+  // Person-hours for effort/staffing estimate
+  const estimatedHours = Math.round((vms * minutesPerVm) / 60)
+
+  // Pre-migration phases depend on target platform
+  const preMigrationPhases: PreMigrationPhase[] = []
+
+  preMigrationPhases.push({
+    phase: 'Assessment & discovery',
+    weeks: vms < 200 ? '1–2' : vms < 1000 ? '2–3' : '3–4',
+    description: 'Inventory VMs, map dependencies, identify Gen1 vs Gen2, network topology review, storage profiling, and workload grouping into migration waves.',
+  })
 
   if (primaryFamily === 'azureLocal') {
-    notes.push('Bias waves toward Azure Local once Arc onboarding, Update Manager, and Policy are in place.')
-    hoursPerVm += 0.25
+    preMigrationPhases.push({
+      phase: 'Azure Landing Zone design',
+      weeks: '2–4',
+      description: 'Design and deploy Azure Local Landing Zone: subscription + management group hierarchy, Azure Arc onboarding, Azure Policy baselines, Update Manager, Monitor, Defender for Cloud, and network integration (ExpressRoute / VPN where applicable).',
+    })
+    preMigrationPhases.push({
+      phase: 'Azure Local upskilling',
+      weeks: '2–4',
+      description: 'Azure Local is a distinct platform from both VMware and legacy Hyper-V. Teams need hands-on training covering HCI cluster deployment, S2D/storage policies, Network ATC, Arc agent management, Update Manager, and the Azure control-plane model. Microsoft Global Delivery (Unified) offers structured upskilling workshops for this.',
+    })
+    preMigrationPhases.push({
+      phase: 'Pilot cluster deployment',
+      weeks: '2–3',
+      description: 'Deploy a pilot Azure Local cluster with validated hardware, configure storage and networking, onboard to Arc, and migrate a representative pilot workload group to validate the pattern before full-scale waves begin.',
+    })
+    notes.push('Bias early migration waves toward non-critical workloads on Azure Local once Arc onboarding, Update Manager, and Policy assignments are validated.')
   } else if (primaryFamily === 'hyperV') {
-    notes.push('Bias waves toward Hyper-V targets first to retire legacy hosts and reuse storage.')
+    preMigrationPhases.push({
+      phase: 'Hyper-V cluster design',
+      weeks: '1–2',
+      description: 'Design failover cluster topology, shared storage (iSCSI / SMB / SAN), network isolation with Hyper-V vSwitch / SET, and SCVMM or WAC management hierarchy.',
+    })
+    preMigrationPhases.push({
+      phase: 'Windows Server / Hyper-V upskilling',
+      weeks: '1–2',
+      description: 'Upskilling is typically lower if the team already operates Windows Server. Focus on live migration, replication, SCVMM runbooks, and WAC-based operations. Formal WorkshopPLUS delivery is available through Microsoft Unified.',
+    })
+    preMigrationPhases.push({
+      phase: 'Pilot migration',
+      weeks: '1–2',
+      description: 'Migrate a representative pilot batch of VMs using the chosen tool, validate IP preservation, connectivity, and application readiness before scaling.',
+    })
+    notes.push('Bias early migration waves toward Hyper-V targets to retire legacy hosts and reuse existing storage fabric.')
   }
 
-  const parallelPerWave = Math.max(parallelPerHost, hosts > 0 ? Math.min(parallelPerHost * Math.max(1, Math.floor(hosts / 4)), 60) : parallelPerHost)
-  const waves = Math.max(1, Math.ceil(vms / parallelPerWave))
-  const estimatedHours = Math.round(vms * hoursPerVm)
-  const estimatedWeeks = Math.max(1, Math.ceil(estimatedHours / 60))
+  preMigrationPhases.push({
+    phase: 'Full-scale migration waves',
+    weeks: `${migrationWeeks}–${migrationWeeks + 2}`,
+    description: `Structured wave-based migration using ${approachLabel}. Each wave includes pre-validation, replication / conversion, cutover, post-migration smoke test, and host retirement.`,
+  })
+
+  const preMigrationWeeks = preMigrationPhases
+    .slice(0, -1)
+    .reduce((acc, p) => {
+      const m = p.weeks.match(/(\d+)/)
+      return acc + (m ? parseInt(m[1]) : 2)
+    }, 0)
+
+  const totalCalendarWeeks = preMigrationWeeks + migrationWeeks
 
   let complexity: MigrationEffort['complexity']
   if (vms < 100) complexity = 'low'
@@ -1773,13 +1852,17 @@ const computeMigrationEffort = (
   return {
     approach,
     approachLabel,
+    approachPreview,
     totalVmsMigrated: vms,
     parallelPerWave,
     waves,
     estimatedHours,
-    estimatedWeeks,
+    migrationWeeks,
+    preMigrationWeeks,
+    totalCalendarWeeks,
     complexity,
     notes,
+    preMigrationPhases,
   }
 }
 

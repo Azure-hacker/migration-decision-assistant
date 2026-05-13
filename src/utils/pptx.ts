@@ -354,7 +354,7 @@ export const generatePptx = async (result: EvaluationResult, customer?: string) 
       `Total VMs in scope: ${me.totalVmsMigrated}`,
       `Parallel VMs per wave: ${me.parallelPerWave}`,
       `Estimated waves: ${me.waves}`,
-      `Estimated effort: ~${me.estimatedHours} hours (~${me.estimatedWeeks} weeks of focused execution)`,
+      `Estimated effort: ~${me.estimatedHours} hours of engineer effort (~${me.totalCalendarWeeks} total calendar weeks including pre-migration phases)`,
       `Complexity: ${me.complexity}`,
       '',
       'Notes:',
