@@ -1,6 +1,6 @@
 # Public reference summary
 
-These notes summarize public documentation themes used to shape the V1 scoring model. They are intentionally generalized for a public repository.
+These notes summarize public documentation themes used to shape the deterministic scoring model in the Migration Decision Assistant. They are intentionally generalized for a public repository.
 
 ## Azure Local
 
@@ -16,19 +16,19 @@ Useful source areas:
 - Azure Arc VM management on Azure Local
 - Windows Admin Center management for Azure Local
 
-## Azure Red Hat OpenShift
+## Azure-native (cloud-first)
 
-Public documentation and reference architectures position Azure Red Hat OpenShift as a managed OpenShift application platform on Azure. Relevant public themes include:
+Public Microsoft documentation positions Azure regions as the default target for greenfield workloads that have no on-premises placement requirements. Relevant public themes include:
 
-- Containerized application delivery, Kubernetes/OpenShift operations, and platform engineering.
-- Private networking, identity integration, RBAC, policy, observability, and security controls for regulated workloads.
-- Fit for organizations standardizing on OpenShift or seeking a managed Azure-hosted application platform.
+- Cloud Adoption Framework landing zones, identity, networking, and policy baselines.
+- Azure-native services such as Azure VMs, AKS, App Service, AVD, and managed AI services.
+- Suitability for greenfield or container-first workloads that benefit from elasticity and managed services.
 
 Useful source areas:
 
-- Azure Red Hat OpenShift overview and reference architectures
-- Azure Red Hat OpenShift security and identity guidance
-- Azure architecture guidance for regulated OpenShift workloads
+- Azure architecture center
+- Cloud Adoption Framework
+- Azure Well-Architected Framework
 
 ## Windows Server / Hyper-V
 
@@ -44,7 +44,7 @@ Useful source areas:
 - Hyper-V architecture and technical capabilities
 - Windows Server high availability and virtualization management documentation
 
-## Derived V1 decision dimensions
+## Derived decision dimensions
 
 The app converts these public themes into deterministic scoring dimensions:
 
