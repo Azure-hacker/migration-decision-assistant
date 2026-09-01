@@ -1,7 +1,7 @@
 {
   "azureLocal": {
-    "version": "2607",
-    "label": "Azure Local 2607",
+    "version": "2608",
+    "label": "Azure Local 2608",
     "docsUrl": "https://learn.microsoft.com/en-us/azure/azure-local/whats-new"
   },
   "windowsServer": {
@@ -9,5 +9,5 @@
     "label": "Windows Server 2025",
     "docsUrl": "https://learn.microsoft.com/en-us/windows-server/get-started/whats-new-windows-server"
   },
-  "lastChecked": "2026-08-15"
+  "lastChecked": "2026-09-01"
 }
